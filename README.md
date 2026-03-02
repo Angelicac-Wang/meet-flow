@@ -1,6 +1,8 @@
-# Meet Flow
+# MeetFlow
 
 ## Project Description
+
+![](/public/banner.jpeg)
 
 Meet Flow is a meeting availability finder built with Next.js. Add members, mark their free time on a weekly grid (Mon–Fri, 9–17), and see overlapping slots so you can pick meeting times that work for everyone.
 
