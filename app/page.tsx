@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,12 @@ import {
 } from "@/components/ui/dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
-import { Plus, Users, Calendar, User, CalendarCheck } from "lucide-react";
+import { Plus, Users, Calendar, User, CalendarCheck, Copy, Check, LogIn } from "lucide-react";
+import {
+  generateInviteCode,
+  saveGroup,
+  getGroupByCode,
+} from "@/lib/invite";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,10 +32,11 @@ type Member = {
   availability: TimeSlot[];
 };
 
+type WeekOption = "this" | "next" | "next2";
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DAYS = ["週一", "週二", "週三", "週四", "週五"];
-const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17];
+const DAY_LABELS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"];
 const COLORS = [
   "bg-orange-500",
   "bg-pink-500",
@@ -42,6 +48,26 @@ const COLORS = [
 ];
 
 const slot = (day: number, hour: number): TimeSlot => `${day}-${hour}`;
+
+// 取得指定週的日期（回傳該週每天的 月/日）
+function getWeekDates(weekOption: WeekOption): string[] {
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const baseMonday = new Date(now);
+  baseMonday.setDate(now.getDate() + mondayOffset);
+
+  const weekOffset =
+    weekOption === "this" ? 0 : weekOption === "next" ? 7 : 14;
+  const monday = new Date(baseMonday);
+  monday.setDate(baseMonday.getDate() + weekOffset);
+
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  });
+}
 
 // ─── Fake initial data ────────────────────────────────────────────────────────
 
@@ -88,10 +114,16 @@ function ScheduleGrid({
   availability,
   onToggle,
   emerald = false,
+  days,
+  hours,
+  dayDates,
 }: {
   availability: TimeSlot[];
   onToggle?: (day: number, hour: number) => void;
   emerald?: boolean;
+  days: string[];
+  hours: number[];
+  dayDates?: string[];
 }) {
   return (
     <div className="overflow-x-auto">
@@ -99,20 +131,25 @@ function ScheduleGrid({
         <thead>
           <tr>
             <th className="w-14" />
-            {DAYS.map((d) => (
+            {days.map((d, i) => (
               <th key={d} className="p-2 text-center font-medium text-sm">
-                {d}
+                <div>{d}</div>
+                {dayDates && (
+                  <div className="text-xs font-normal text-muted-foreground mt-0.5">
+                    {dayDates[i]}
+                  </div>
+                )}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {HOURS.map((h) => (
+          {hours.map((h) => (
             <tr key={h}>
               <td className="text-right pr-3 text-muted-foreground text-xs py-0.5 whitespace-nowrap">
                 {h}:00
               </td>
-              {DAYS.map((_, d) => {
+              {days.map((_, d) => {
                 const s = slot(d, h);
                 const active = availability.includes(s);
                 const cellClass = active
@@ -133,6 +170,83 @@ function ScheduleGrid({
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ─── 時間範圍與顯示（緊湊版）───────────────────────────────────────────────────
+
+function TimeDisplaySettings({
+  includeWeekend,
+  setIncludeWeekend,
+  startHour,
+  setStartHour,
+  endHour,
+  setEndHour,
+  weekOption,
+  setWeekOption,
+  dayDates,
+}: {
+  includeWeekend: boolean;
+  setIncludeWeekend: (v: boolean) => void;
+  startHour: number;
+  setStartHour: (v: number) => void;
+  endHour: number;
+  setEndHour: (v: number) => void;
+  weekOption: WeekOption;
+  setWeekOption: (v: WeekOption) => void;
+  dayDates: string[];
+}) {
+  return (
+    <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border bg-muted/50 px-3 py-2 text-xs">
+      <label className="flex cursor-pointer items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={includeWeekend}
+          onChange={(e) => setIncludeWeekend(e.target.checked)}
+          className="rounded border-input"
+        />
+        包含週末
+      </label>
+      <div className="flex items-center gap-1.5">
+        <span className="text-muted-foreground">時段</span>
+        <Input
+          type="number"
+          min={0}
+          max={23}
+          value={startHour}
+          onChange={(e) => setStartHour(Number(e.target.value) || 0)}
+          className="h-7 w-12 px-1.5 text-center"
+        />
+        <span className="text-muted-foreground">–</span>
+        <Input
+          type="number"
+          min={0}
+          max={24}
+          value={endHour}
+          onChange={(e) => setEndHour(Number(e.target.value) || 24)}
+          className="h-7 w-12 px-1.5 text-center"
+        />
+        <span className="text-muted-foreground">:00</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-muted-foreground">週次</span>
+        <div className="flex gap-1">
+          {(["this", "next", "next2"] as const).map((opt) => (
+            <Button
+              key={opt}
+              variant={weekOption === opt ? "default" : "outline"}
+              size="xs"
+              onClick={() => setWeekOption(opt)}
+            >
+              {opt === "this" ? "本週" : opt === "next" ? "下週" : "下下週"}
+            </Button>
+          ))}
+        </div>
+        <span className="text-muted-foreground">
+          {dayDates[0]}–{dayDates[dayDates.length - 1]}
+        </span>
+      </div>
     </div>
   );
 }
@@ -160,15 +274,87 @@ export default function MeetFlow() {
   const [open, setOpen] = useState(false);
   const [viewId, setViewId] = useState("xiao-liang");
 
+  // 功能一：時間範圍與顯示
+  const [includeWeekend, setIncludeWeekend] = useState(false);
+  const [startHour, setStartHour] = useState(9);
+  const [endHour, setEndHour] = useState(17);
+  const [weekOption, setWeekOption] = useState<WeekOption>("this");
+
+  // 功能二：共同空閒成員選擇（預設全選）
+  const [selectedMemberIds, setSelectedMemberIds] = useState<Set<string>>(
+    () => new Set(INITIAL_MEMBERS.map((m) => m.id))
+  );
+
+  // 功能三：邀請碼
+  const [inviteCode, setInviteCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [joinDialogOpen, setJoinDialogOpen] = useState(false);
+  const [joinCodeInput, setJoinCodeInput] = useState("");
+  const [joinError, setJoinError] = useState("");
+
   const me = members.find((m) => m.id === "me")!;
   const others = members.filter((m) => m.id !== "me");
   const viewing = members.find((m) => m.id === viewId) ?? others[0];
 
-  const commonSlots = DAYS.flatMap((_, d) =>
-    HOURS.filter((h) =>
-      members.every((m) => m.availability.includes(slot(d, h)))
-    ).map((h) => slot(d, h))
+  const days = useMemo(
+    () => (includeWeekend ? DAY_LABELS : DAY_LABELS.slice(0, 5)),
+    [includeWeekend]
   );
+  const hours = useMemo(() => {
+    const arr: number[] = [];
+    for (let h = startHour; h < endHour; h++) arr.push(h);
+    return arr;
+  }, [startHour, endHour]);
+  const dayDates = useMemo(() => getWeekDates(weekOption), [weekOption]);
+
+  // 同步 selectedMemberIds 當成員變動時（新成員預設選中，移除的成員取消選中）
+  const memberIds = useMemo(() => members.map((m) => m.id), [members]);
+  useEffect(() => {
+    setSelectedMemberIds((prev) => {
+      const next = new Set(prev);
+      memberIds.forEach((id) => next.add(id));
+      prev.forEach((id) => {
+        if (!memberIds.includes(id)) next.delete(id);
+      });
+      return next;
+    });
+  }, [memberIds.join(",")]);
+
+  const selectedMembers = useMemo(
+    () => members.filter((m) => selectedMemberIds.has(m.id)),
+    [members, selectedMemberIds]
+  );
+
+  const commonSlots = useMemo(() => {
+    if (selectedMembers.length === 0) return [];
+    return days
+      .map((_, d) =>
+        hours
+          .filter((h) =>
+            selectedMembers.every((m) => m.availability.includes(slot(d, h)))
+          )
+          .map((h) => slot(d, h))
+      )
+      .flat();
+  }, [days.length, hours, selectedMembers]);
+
+  // 邀請碼：初始化與儲存
+  useEffect(() => {
+    if (inviteCode) {
+      saveGroup(inviteCode, members.map((m) => ({ ...m, availability: m.availability })));
+    }
+  }, [members, inviteCode]);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("meetflow-invite-code");
+    if (stored) {
+      setInviteCode(stored);
+    } else {
+      const code = generateInviteCode();
+      setInviteCode(code);
+      localStorage.setItem("meetflow-invite-code", code);
+    }
+  }, []);
 
   function toggleMySlot(day: number, hour: number) {
     const s = slot(day, hour);
@@ -197,8 +383,46 @@ export default function MeetFlow() {
       availability: [],
     };
     setMembers((prev) => [...prev, newMember]);
+    setSelectedMemberIds((prev) => new Set([...prev, newMember.id]));
     setNewName("");
     setOpen(false);
+  }
+
+  function toggleMemberSelection(id: string) {
+    setSelectedMemberIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function handleCopyInviteCode() {
+    navigator.clipboard.writeText(inviteCode).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  function handleJoinGroup() {
+    setJoinError("");
+    const group = getGroupByCode(joinCodeInput);
+    if (!group) {
+      setJoinError("邀請碼無效或已過期");
+      return;
+    }
+    setMembers((prev) => {
+      const existingIds = new Set(prev.map((m) => m.id));
+      const toAdd = group.members
+        .filter((m) => !existingIds.has(m.id))
+        .map((m) => ({
+          ...m,
+          id: `member-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        })) as Member[];
+      return [...prev, ...toAdd];
+    });
+    setJoinCodeInput("");
+    setJoinDialogOpen(false);
   }
 
   return (
@@ -217,7 +441,7 @@ export default function MeetFlow() {
       {/* ── Main ── */}
       <main className="max-w-4xl mx-auto px-6 py-8">
         <Tabs defaultValue="members">
-          <TabsList className="mb-8 h-10">
+          <TabsList className="mb-2 h-10">
             <TabsTrigger value="members" className="gap-1.5 text-sm">
               <Users className="w-3.5 h-3.5" />
               成員
@@ -238,6 +462,78 @@ export default function MeetFlow() {
 
           {/* ── Tab 1: Members ── */}
           <TabsContent value="members">
+            {/* 功能三：邀請碼 */}
+            <Card className="mb-6 gap-2">
+              <CardHeader className="pb-1">
+                <CardTitle className="text-base">邀請成員加入群組</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  分享邀請碼給其他人，他們輸入後即可加入此群組
+                </p>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">邀請碼：</span>
+                    <code className="text-lg font-mono font-semibold tracking-widest bg-muted px-3 py-1.5 rounded">
+                      {inviteCode || "------"}
+                    </code>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleCopyInviteCode}
+                    className="gap-1.5"
+                  >
+                    {copied ? (
+                      <>
+                        <Check className="w-4 h-4" />
+                        已複製
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4" />
+                        複製
+                      </>
+                    )}
+                  </Button>
+                  <Dialog open={joinDialogOpen} onOpenChange={setJoinDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button size="sm" variant="secondary" className="gap-1.5">
+                        <LogIn className="w-4 h-4" />
+                        加入群組
+                      </Button>
+                    </DialogTrigger>
+                  <DialogContent className="sm:max-w-xs">
+                    <DialogHeader>
+                      <DialogTitle>輸入邀請碼</DialogTitle>
+                    </DialogHeader>
+                    <div className="flex flex-col gap-3 mt-2">
+                      <Input
+                        placeholder="輸入 6 位邀請碼"
+                        value={joinCodeInput}
+                        onChange={(e) => {
+                          setJoinCodeInput(e.target.value.toUpperCase());
+                          setJoinError("");
+                        }}
+                        maxLength={6}
+                        className="font-mono tracking-widest text-center"
+                      />
+                      {joinError && (
+                        <p className="text-sm text-destructive">{joinError}</p>
+                      )}
+                      <Button
+                        onClick={handleJoinGroup}
+                        disabled={joinCodeInput.length !== 6}
+                      >
+                        加入
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+                </div>
+              </CardContent>
+            </Card>
+
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className="text-base font-semibold">成員列表</h2>
@@ -302,6 +598,17 @@ export default function MeetFlow() {
 
           {/* ── Tab 2: My Schedule ── */}
           <TabsContent value="my-schedule">
+            <TimeDisplaySettings
+              includeWeekend={includeWeekend}
+              setIncludeWeekend={setIncludeWeekend}
+              startHour={startHour}
+              setStartHour={setStartHour}
+              endHour={endHour}
+              setEndHour={setEndHour}
+              weekOption={weekOption}
+              setWeekOption={setWeekOption}
+              dayDates={dayDates}
+            />
             <div className="mb-5">
               <h2 className="text-base font-semibold">我的時間表</h2>
               <p className="text-sm text-muted-foreground mt-0.5">
@@ -319,6 +626,9 @@ export default function MeetFlow() {
                 <ScheduleGrid
                   availability={me.availability}
                   onToggle={toggleMySlot}
+                  days={days}
+                  hours={hours}
+                  dayDates={dayDates}
                 />
               </CardContent>
             </Card>
@@ -326,6 +636,17 @@ export default function MeetFlow() {
 
           {/* ── Tab 3: View Member ── */}
           <TabsContent value="view-member">
+            <TimeDisplaySettings
+              includeWeekend={includeWeekend}
+              setIncludeWeekend={setIncludeWeekend}
+              startHour={startHour}
+              setStartHour={setStartHour}
+              endHour={endHour}
+              setEndHour={setEndHour}
+              weekOption={weekOption}
+              setWeekOption={setWeekOption}
+              dayDates={dayDates}
+            />
             <div className="mb-5">
               <h2 className="text-base font-semibold">查看成員時間表</h2>
               <p className="text-sm text-muted-foreground mt-0.5">
@@ -376,7 +697,12 @@ export default function MeetFlow() {
                           },
                         ]}
                       />
-                      <ScheduleGrid availability={viewing.availability} />
+                      <ScheduleGrid
+                        availability={viewing.availability}
+                        days={days}
+                        hours={hours}
+                        dayDates={dayDates}
+                      />
                     </CardContent>
                   </Card>
                 )}
@@ -386,11 +712,47 @@ export default function MeetFlow() {
 
           {/* ── Tab 4: Common Availability ── */}
           <TabsContent value="common">
+            <TimeDisplaySettings
+              includeWeekend={includeWeekend}
+              setIncludeWeekend={setIncludeWeekend}
+              startHour={startHour}
+              setStartHour={setStartHour}
+              endHour={endHour}
+              setEndHour={setEndHour}
+              weekOption={weekOption}
+              setWeekOption={setWeekOption}
+              dayDates={dayDates}
+            />
             <div className="mb-5">
               <h2 className="text-base font-semibold">共同空閒時間</h2>
               <p className="text-sm text-muted-foreground mt-0.5">
-                所有 {members.length} 位成員都空閒的時段
+                所選 {selectedMembers.length} 位成員都空閒的時段
               </p>
+            </div>
+
+            {/* 功能二：成員選擇 */}
+            <div className="mb-5">
+              <p className="text-sm font-medium mb-2">選擇納入計算的成員（點擊切換）</p>
+              <div className="flex flex-wrap gap-2">
+                {members.map((m) => {
+                  const selected = selectedMemberIds.has(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => toggleMemberSelection(m.id)}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                        selected
+                          ? `${m.color} text-white`
+                          : "bg-muted text-muted-foreground hover:bg-muted/80"
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-current opacity-80" />
+                      {m.name}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <Card>
@@ -406,7 +768,13 @@ export default function MeetFlow() {
                     目前沒有共同空閒時段
                   </p>
                 ) : (
-                  <ScheduleGrid availability={commonSlots} emerald />
+                  <ScheduleGrid
+                    availability={commonSlots}
+                    emerald
+                    days={days}
+                    hours={hours}
+                    dayDates={dayDates}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -420,7 +788,7 @@ export default function MeetFlow() {
                       key={s}
                       className="text-sm px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 dark:bg-emerald-950 dark:border-emerald-800 dark:text-emerald-200"
                     >
-                      {DAYS[d]} {h}:00–{h + 1}:00
+                      {days[d]} {dayDates[d]} {h}:00–{h + 1}:00
                     </div>
                   );
                 })}
